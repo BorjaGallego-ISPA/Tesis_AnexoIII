@@ -1,0 +1,422 @@
+---
+title: 'Omic Characterization of Doxorubicin Resistant Bone Sarcoma Models: Transcriptomic'
+author: "Borja Gallego Martínez"
+date: "`r Sys.Date()`"
+output: 
+  html_document: 
+    toc: true
+    toc_float: true
+    toc_collapsed: true
+    highlight: pygments
+    theme: paper
+    df_print: kable
+---
+
+```{r Setup, include=FALSE}
+ # Setup default parameters in the code chunks
+knitr::opts_chunk$set(
+  echo = F, 
+  message = F, 
+  warning = F, 
+  eval = T, 
+  cache.lazy = F 
+  )
+```
+
+```{r Packages and Functions Setup, message=FALSE, warning=FALSE, include=FALSE}
+library(tidyverse)
+library(readxl)
+library(plotly)
+library(tximport)
+library(GenomicFeatures)
+library(limma)
+library(edgeR)
+library(AnnotationDbi)
+library(org.Hs.eg.db)
+library(ggrepel)
+library(ggVennDiagram)
+library(VennDiagram)
+library(clusterProfiler)
+library(msigdbr)
+library(enrichplot)
+library(OmnipathR)
+library(dorothea)
+library(decoupleR)
+select <- dplyr::select
+mutate <- dplyr::mutate
+filter <- dplyr::filter
+source("00_Functions.R")
+set.seed(123)
+```
+
+# **Importing Input Data**
+
+```{r Metadata table}
+Metadata <- read_xlsx("./Raw/RNAseq/RNAseq_Metadata.xlsx") %>%
+  column_to_rownames(var = "SampleN") %>%
+  mutate(group = paste(cell_line, condition, sep = "_"))
+Metadata
+```
+
+```{r Proccessing Input Data}
+# Importing Transcript Abundance with Tximport
+
+files <- list.files("./Raw/RNAseq", pattern = "quant.sf", recursive = T,
+                    full.names = T) %>%
+  gtools::mixedsort()
+names(files) <- rownames(Metadata)
+Txdb <- makeTxDbFromEnsembl(organism = "Homo sapiens", release = 97)
+k <- keys(Txdb, keytype = "TXNAME")
+tx2gene <- AnnotationDbi::select(Txdb, k, "GENEID", "TXNAME")
+txi <- tximport(files, type = "salmon", tx2gene = tx2gene, ignoreTxVersion = T,
+                countsFromAbundance = "lengthScaledTPM")
+
+# Creating DGEList Object and Prefiltering
+
+genes <- txi$counts %>%
+  as.data.frame() %>%
+  mutate(
+    Symbol = mapIds(org.Hs.eg.db, keys = rownames(.),
+                      column = "SYMBOL", keytype = "ENSEMBL", multiVals = "first"),
+      Biotype = mapIds(org.Hs.eg.db, keys = rownames(.),
+                       column = "GENETYPE", keytype = "ENSEMBL", multiVals = "first"),
+      Description = mapIds(org.Hs.eg.db, keys = rownames(.),
+                           column = "GENENAME", keytype = "ENSEMBL", multiVals = "first")
+  ) %>%
+  select(Symbol, Biotype, Description)
+y <- DGEList(counts = txi$counts, samples = Metadata, genes = genes)
+keep <- filterByExpr(y)
+y <- y[keep, ]
+y <- calcNormFactors(y)
+design <- model.matrix(~ 0 + group, data = Metadata)
+colnames(design) <- gsub("group", "", colnames(design))
+v <- voom(y, design = design)
+```
+
+# **Quality Control**
+
+## Correlation Heatmaps
+
+```{r Correlation Heatmaps}
+Overall.QC.CorrHeatmap <- QC.MakeCorrHeatmap(
+  Counts.norm = v$E,
+  heatmap.rows = paste(v$targets$cell_line, v$targets$condition, v$targets$replicate, sep = "_"),
+  main = "Correlation Heatmap of All Samples",
+  output.path = "./Results/RNAseq_limma/Figures/Overall_QC_CorrHeatmap.tiff"
+    )
+b143.QC.CorrHeatmap <- QC.MakeCorrHeatmap(
+  Counts.norm = v$E[, v$targets$cell_line == "b143"],
+  heatmap.rows = paste(v$targets$cell_line[v$targets$cell_line == "b143"],
+                       v$targets$condition[v$targets$cell_line == "b143"],
+                       v$targets$replicate[v$targets$cell_line == "b143"], sep = "_"),
+  main = "Correlation Heatmap of 143B Samples",
+  output.path = "./Results/RNAseq_limma/Figures/b143_QC_CorrHeatmap.tiff"
+    )
+Saos2.QC.CorrHeatmap <- QC.MakeCorrHeatmap(
+  Counts.norm = v$E[, v$targets$cell_line == "Saos2"],
+  heatmap.rows = paste(v$targets$cell_line[v$targets$cell_line == "Saos2"],
+                       v$targets$condition[v$targets$cell_line == "Saos2"],
+                       v$targets$replicate[v$targets$cell_line == "Saos2"], sep = "_"),
+  main = "Correlation Heatmap of SaOS-2 Samples",
+  output.path = "./Results/RNAseq_limma/Figures/Saos2_QC_CorrHeatmap.tiff"
+    )
+MG63.QC.CorrHeatmap <- QC.MakeCorrHeatmap(
+  Counts.norm = v$E[, v$targets$cell_line == "MG63"],
+  heatmap.rows = paste(v$targets$cell_line[v$targets$cell_line == "MG63"],
+                       v$targets$condition[v$targets$cell_line == "MG63"],
+                       v$targets$replicate[v$targets$cell_line == "MG63"], sep = "_"),
+  main = "Correlation Heatmap of MG-63 Samples",
+  output.path = "./Results/RNAseq_limma/Figures/MG63_QC_CorrHeatmap.tiff"
+    )
+TCDS17.QC.CorrHeatmap <- QC.MakeCorrHeatmap(
+  Counts.norm = v$E[, v$targets$cell_line == "TCDS17"],
+  heatmap.rows = paste(v$targets$cell_line[v$targets$cell_line == "TCDS17"],
+                       v$targets$condition[v$targets$cell_line == "TCDS17"],
+                       v$targets$replicate[v$targets$cell_line == "TCDS17"], sep = "_"),
+  main = "Correlation Heatmap of T-CDS-17#4 Samples",
+  output.path = "./Results/RNAseq_limma/Figures/TCDS17_QC_CorrHeatmap.tiff"
+    )
+```
+
+## Principal Component Analysis
+
+```{r PCAs}
+Overall.QC.PCA <- QC.MakePCA(
+  data = v$E,
+  metadata = Metadata,
+  main = "PCA of All Samples",
+  output.path = "./Results/RNAseq_limma/Figures/Overall_QC_PCA.tiff",
+  fill.color = c("#FF0000", "#0000FF")
+)
+ggplotly(Overall.QC.PCA$Plot)
+b143.QC.PCA <- QC.MakePCA(
+  data = v$E[, v$targets$cell_line == "b143"],
+  metadata = Metadata[Metadata$cell_line == "b143", ],
+  main = "PCA of 143B Samples",
+  output.path = "./Results/RNAseq_limma/Figures/b143_QC_PCA.tiff",
+  fill.color = c("#FF0000", "#0000FF")
+)
+ggplotly(b143.QC.PCA$Plot)
+Saos2.QC.PCA <- QC.MakePCA(
+  data = v$E[, v$targets$cell_line == "Saos2"],
+  metadata = Metadata[Metadata$cell_line == "Saos2", ],
+  main = "PCA of SaOS-2 Samples",
+  output.path = "./Results/RNAseq_limma/Figures/Saos2_QC_PCA.tiff",
+  fill.color = c("#FF0000", "#0000FF")
+)
+ggplotly(Saos2.QC.PCA$Plot)
+MG63.QC.PCA <- QC.MakePCA(
+  data = v$E[, v$targets$cell_line == "MG63"],
+  metadata = Metadata[Metadata$cell_line == "MG63", ],
+  main = "PCA of MG-63 Samples",
+  output.path = "./Results/RNAseq_limma/Figures/MG63_QC_PCA.tiff",
+  fill.color = c("#FF0000", "#0000FF")
+)
+ggplotly(MG63.QC.PCA$Plot)
+TCDS17.QC.PCA <- QC.MakePCA(
+  data = v$E[, v$targets$cell_line == "TCDS17"],
+  metadata = Metadata[Metadata$cell_line == "TCDS17", ],
+  main = "PCA of T-CDS-17#4 Samples",
+  output.path = "./Results/RNAseq_limma/Figures/TCDS17_QC_PCA.tiff",
+  fill.color = c("#FF0000", "#0000FF")
+)
+ggplotly(TCDS17.QC.PCA$Plot)
+```
+
+# **Differential Expression Analysis**
+
+```{r DEA: Tables}
+contr.matrix <- makeContrasts(
+  b143.cont = b143_DXR - b143_Par,
+  Saos.cont = Saos2_DXR - Saos2_Par,
+  MG63.cont = MG63_DXR - MG63_Par,
+  TCDS17.cont = TCDS17_DXR - TCDS17_Par,
+  levels = colnames(design)
+)
+vfit <- lmFit(v, design)
+vfit <- contrasts.fit(vfit, contrasts = contr.matrix)
+efit <- eBayes(vfit)
+
+b143.DEGs <- topTable(efit, number = Inf, coef = 1) %>%
+  filter(!is.na(Symbol)) %>%
+  arrange(adj.P.Val) %>%
+  distinct(Symbol, .keep_all = T) %>%
+  arrange(Symbol)
+write.csv(b143.DEGs, "./Results/RNAseq_limma/b143_DEGsTable.csv")
+xlsx::write.xlsx2(b143.DEGs, "./Results/RNAseq_limma/b143_DEGsTable.xlsx")
+
+Saos2.DEGs <- topTable(efit, number = Inf, coef = 2) %>%
+  filter(!is.na(Symbol)) %>%
+  arrange(adj.P.Val) %>%
+  distinct(Symbol, .keep_all = T) %>%
+  arrange(Symbol)
+write.csv(Saos2.DEGs, "./Results/RNAseq_limma/Saos2_DEGsTable.csv")
+xlsx::write.xlsx2(Saos2.DEGs, "./Results/RNAseq_limma/Saos2_DEGsTable.xlsx")
+
+MG63.DEGs <- topTable(efit, number = Inf, coef = 3) %>%
+  filter(!is.na(Symbol)) %>%
+  arrange(adj.P.Val) %>%
+  distinct(Symbol, .keep_all = T) %>%
+  arrange(Symbol)
+write.csv(MG63.DEGs, "./Results/RNAseq_limma/MG63_DEGsTable.csv")
+xlsx::write.xlsx2(MG63.DEGs, "./Results/RNAseq_limma/MG63_DEGsTable.xlsx")
+
+TCDS17.DEGs <- topTable(efit, number = Inf, coef = 4) %>%
+  filter(!is.na(Symbol)) %>%
+  arrange(adj.P.Val) %>%
+  distinct(Symbol, .keep_all = T) %>%
+  arrange(Symbol)
+write.csv(TCDS17.DEGs, "./Results/RNAseq_limma/TCDS17_DEGsTable.csv")
+xlsx::write.xlsx2(TCDS17.DEGs, "./Results/RNAseq_limma/TCDS17_DEGsTable.xlsx")
+```
+
+## Volcano Plots
+
+```{r DEA: Volcano Plots}
+b143.DEA.volcano <- DEA.MakeVolcano(
+  DEA.table = b143.DEGs,
+  sym.coln = "Symbol", lfc.coln = "logFC", fdr.coln = "adj.P.Val",
+  main = "DEGs for 143B DX-R vs. Parental",
+  output.path = "./Results/RNAseq_limma/Figures/b143_DEGs_volcano.tiff"
+)
+b143.DEA.volcano
+Saos2.DEA.volcano <- DEA.MakeVolcano(
+  DEA.table = Saos2.DEGs,
+  sym.coln = "Symbol", lfc.coln = "logFC", fdr.coln = "adj.P.Val",
+  main = "DEGs for SaOS-2 DX-R vs. Parental",
+  output.path = "./Results/RNAseq_limma/Figures/Saos2_DEGs_volcano.tiff"
+)
+Saos2.DEA.volcano
+MG63.DEA.volcano <- DEA.MakeVolcano(
+  DEA.table = MG63.DEGs,
+  sym.coln = "Symbol", lfc.coln = "logFC", fdr.coln = "adj.P.Val",
+  main = "DEGs for MG-63 DX-R vs. Parental",
+  output.path = "./Results/RNAseq_limma/Figures/MG63_DEGs_volcano.tiff"
+)
+MG63.DEA.volcano
+TCDS17.DEA.volcano <- DEA.MakeVolcano(
+  DEA.table = TCDS17.DEGs,
+  sym.coln = "Symbol", lfc.coln = "logFC", fdr.coln = "adj.P.Val",
+  main = "DEGs for T-CDS-17#4 DX-R vs. Parental",
+  output.path = "./Results/RNAseq_limma/Figures/TCDS17_DEGs_volcano.tiff"
+)
+TCDS17.DEA.volcano
+```
+
+## Checking Coincidences by Venn Diagrams
+
+```{r DEA: Venn Diagrams}
+Overall.DEA.VennDiagrams <- DEA.MakeVenn(
+  data.l = list(
+    "143B" = b143.DEGs,
+    "SaOS-2" = Saos2.DEGs,
+    "MG-63" = MG63.DEGs,
+    "T-CDS-17#4" = TCDS17.DEGs
+    ),
+  lfc.coln = "logFC", fdr.coln = "adj.P.Val",
+  up.main = "Up-Regulated Coincidences",
+  up.file = "./Results/RNAseq_limma/Figures/Overall_DEA_VennDiagram_up.tiff",
+  down.main = "Down-Regulated Coincidences",
+  down.file = "./Results/RNAseq_limma/Figures/Overall_DEA_VennDiagram_down.tiff"
+  )
+Overall.DEA.VennDiagrams$Up.plot
+data.frame("Global Up Coincidences" = Overall.DEA.VennDiagrams$Up.data[[1]])
+Overall.DEA.VennDiagrams$Down.plot
+data.frame("Global Down Coincidences" = Overall.DEA.VennDiagrams$Down.data[[1]])
+```
+
+# **Functional Analysis**
+
+## Gene Set Enrichment Analysis (GSEA) with MSigDB Hallmark Collection
+
+```{r Functional Analysis: GSEA with Hallmark MSigDB}
+Msigdb.geneset_h <- msigdbr(species = "human", category = "H") %>%
+  select(gs_name, entrez_gene)
+b143.GSEA.data <- PathEnrich.MakeGSEA(
+  GeneSet = Msigdb.geneset_h,
+  Res = b143.DEGs, lfc.coln = "logFC",
+  table.csv = "./Results/RNAseq_limma/b143_GSEATable.csv",
+  table.xlsx = "./Results/RNAseq_limma/b143_GSEATable.xlsx"
+)
+b143.GSEA.bubble <- PathEnrich.MakeBubble(
+  b143.GSEA.data$Results.table,
+  main = "Hallmark MSigDb Pathways Regulated in 143B DX-R",
+  output.path = "./Results/RNAseq_limma/Figures/b143_GSEA_bubble.tiff"
+)
+Saos2.GSEA.data <- PathEnrich.MakeGSEA(
+  GeneSet = Msigdb.geneset_h,
+  Res = Saos2.DEGs, lfc.coln = "logFC",
+  table.csv = "./Results/RNAseq_limma/Saos2_GSEATable.csv",
+  table.xlsx = "./Results/RNAseq_limma/Saos2_GSEATable.xlsx"
+)
+Saos2.GSEA.bubble <- PathEnrich.MakeBubble(
+  Saos2.GSEA.data$Results.table,
+  main = "Hallmark MSigDb Pathways Regulated in SaOS-2 DX-R",
+  output.path = "./Results/RNAseq_limma/Figures/Saos2_GSEA_bubble.tiff"
+)
+MG63.GSEA.data <- PathEnrich.MakeGSEA(
+  GeneSet = Msigdb.geneset_h,
+  Res = MG63.DEGs, lfc.coln = "logFC",
+  table.csv = "./Results/RNAseq_limma/MG63_GSEATable.csv",
+  table.xlsx = "./Results/RNAseq_limma/MG63_GSEATable.xlsx"
+)
+MG63.GSEA.bubble <- PathEnrich.MakeBubble(
+  MG63.GSEA.data$Results.table,
+  main = "Hallmark MSigDb Pathways Regulated in MG-63 DX-R",
+  output.path = "./Results/RNAseq_limma/Figures/MG63_GSEA_bubble.tiff"
+)
+TCDS17.GSEA.data <- PathEnrich.MakeGSEA(
+  GeneSet = Msigdb.geneset_h,
+  Res = TCDS17.DEGs, lfc.coln = "logFC",
+  table.csv = "./Results/RNAseq_limma/TCDS17_GSEATable.csv",
+  table.xlsx = "./Results/RNAseq_limma/TCDS17_GSEATable.xlsx"
+)
+TCDS17.GSEA.bubble <- PathEnrich.MakeBubble(
+  TCDS17.GSEA.data$Results.table,
+  main = "Hallmark MSigDb Pathways Regulated in T-CDS-17#4 DX-R",
+  output.path = "./Results/RNAseq_limma/Figures/TCDS17_GSEA_bubble.tiff"
+)
+```
+
+## Transcription Factors Activity Inference
+
+```{r Functional Analysis: TFs Activity Inference}
+TFs.Net <- ChooseTFNet(db = "tri")
+
+b143.TFs <- Get_TFs(
+  mat = b143.DEGs, condition = "t",
+  net = TFs.Net, method = "ULM", pval.thr = .05,
+  main = "Significant TFs Regulated in 143B DX-R",
+  output.path  = "./Results/RNAseq_limma/Figures/b143_TFs.tiff"
+  )
+ggplotly(b143.TFs$TFs.barplot)
+
+MG63.TFs <- Get_TFs(
+  mat = MG63.DEGs, condition = "t",
+  net = TFs.Net, method = "ULM", pval.thr = .05,
+  main = "Significant TFs Regulated in MG-63 DX-R",
+  output.path  = "./Results/RNAseq_limma/Figures/MG63_TFs.tiff"
+  )
+ggplotly(MG63.TFs$TFs.barplot)
+
+Saos2.TFs <- Get_TFs(
+  mat = Saos2.DEGs, condition = "t",
+  net = TFs.Net, method = "ULM", pval.thr = .05,
+  main = "Significant TFs Regulated in SaOS-2 DX-R",
+  output.path  = "./Results/RNAseq_limma/Figures/Saos2_TFs.tiff"
+  )
+ggplotly(Saos2.TFs$TFs.barplot)
+
+TCDS17.TFs <- Get_TFs(
+  mat = TCDS17.DEGs, condition = "t",
+  net = TFs.Net, method = "ULM", pval.thr = .05,
+  main = "Significant TFs Regulated in T-CDS-17#4 DX-R",
+  output.path  = "./Results/RNAseq_limma/Figures/TCDS17_TFs.tiff"
+  )
+ggplotly(TCDS17.TFs$TFs.barplot)
+
+
+b143.TFs_all <- Get_TFs(
+  mat = b143.DEGs, condition = "t",
+  net = TFs.Net, method = "ULM",
+  main = "TFs Regulated in 143B DX-R",
+  output.path  = "./Results/RNAseq_limma/Figures/b143_TFs_all.tiff"
+  )
+
+MG63.TFs_all <- Get_TFs(
+  mat = MG63.DEGs, condition = "t",
+  net = TFs.Net, method = "ULM",
+  main = "TFs Regulated in MG-63 DX-R",
+  output.path  = "./Results/RNAseq_limma/Figures/MG63_TFs_all.tiff"
+  )
+
+Saos2.TFs_all <- Get_TFs(
+  mat = Saos2.DEGs, condition = "t",
+  net = TFs.Net, method = "ULM",
+  main = "TFs Regulated in SaOS-2 DX-R",
+  output.path  = "./Results/RNAseq_limma/Figures/Saos2_TFs_all.tiff"
+  )
+
+TCDS17.TFs_all <- Get_TFs(
+  mat = TCDS17.DEGs, condition = "t",
+  net = TFs.Net, method = "ULM",
+  main = "TFs Regulated in T-CDS-17#4 DX-R",
+  output.path  = "./Results/RNAseq_limma/Figures/TCDS17_TFs_all.tiff"
+  )
+```
+
+# **Save Results**
+
+```{r Save Results}
+tf_regulon <- TFs.Net %>%
+  mutate(sign = sign(mor)) %>%
+    select(target, source, sign)
+save(
+  b143.DEGs, b143.TFs, b143.TFs_all,
+  MG63.DEGs, MG63.TFs, MG63.TFs_all,
+  Saos2.DEGs, Saos2.TFs, Saos2.TFs_all,
+  TCDS17.DEGs, TCDS17.TFs, TCDS17.TFs_all,
+  tf_regulon,
+  file = "./Results/Results_RNAseq_limma.RData"
+)
+```

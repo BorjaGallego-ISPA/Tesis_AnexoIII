@@ -1,0 +1,272 @@
+---
+title: 'Omic Characterization of Doxorubicin Resistant Bone Sarcoma Models: Proteomic'
+author: "Borja Gallego Martínez"
+date: "`r Sys.Date()`"
+output: 
+  html_document: 
+    toc: true
+    toc_float: true
+    toc_collapsed: true
+    highlight: pygments
+    theme: paper
+    df_print: kable
+---
+
+```{r Setup, include=FALSE}
+ # Setup default parameters in the code chunks
+knitr::opts_chunk$set(
+  echo = F, 
+  message = F, 
+  warning = F, 
+  eval = T, 
+  cache.lazy = F
+  )
+```
+
+```{r Packages and Functions Setup, message=FALSE, warning=FALSE, include=FALSE}
+library(tidyverse)
+library(readxl)
+library(plotly)
+library(limma)
+library(DEqMS)
+library(AnnotationDbi)
+library(org.Hs.eg.db)
+library(ggrepel)
+library(ggVennDiagram)
+library(VennDiagram)
+library(clusterProfiler)
+library(msigdbr)
+library(enrichplot)
+select <- dplyr::select
+mutate <- dplyr::mutate
+source("00_Functions.R")
+set.seed(123)
+```
+
+# **Importing Input Data**
+
+```{r Metadata table}
+Metadata <- read_xlsx("./Raw/Proteomic/Prot_Metadata.xlsx") %>%
+  column_to_rownames(var = "Label")
+Metadata
+```
+
+```{r Proccessing Input Data}
+b143.raw <- read_xlsx("./Raw/Proteomic/MS_results_143B.xlsx", sheet = 2) %>%
+  filter(is.na(`Potential contaminant`)) %>%
+  mutate(
+    Symbol = sapply(strsplit(`Gene names`, ";"), "[[", 1)
+  ) %>%
+  column_to_rownames(var = "Symbol")
+b143.counts <- b143.raw[, 5:14]
+colnames(b143.counts) <- rownames(Metadata[Metadata$cell_line == "b143", ])
+b143.razor <- b143.raw %>%
+  select(
+    count = `Razor   unique peptides`
+  )
+Saos2.raw <- read_xlsx("./Raw/Proteomic/MS_results_Saos2.xlsx", sheet = 2) %>%
+  filter(is.na(`Potential contaminant`)) %>%
+  mutate(
+    Symbol = sapply(strsplit(`Gene names`, ";"), "[[", 1)
+  ) %>%
+  column_to_rownames(var = "Symbol")
+Saos2.counts <- Saos2.raw[, 5:14]
+colnames(Saos2.counts) <- rownames(Metadata[Metadata$cell_line == "Saos2", ])
+Saos2.razor <- Saos2.raw %>%
+  select(
+    count = `Razor   unique peptides`
+  )
+TCDS17.raw <- read_xlsx("./Raw/Proteomic/MS_results_TCDS17.xlsx", sheet = 2) %>%
+  filter(is.na(`Potential contaminant`)) %>%
+  mutate(
+    Symbol = sapply(strsplit(`Gene names`, ";"), "[[", 1)
+  ) %>%
+  column_to_rownames(var = "Symbol")
+TCDS17.counts <- TCDS17.raw[, 5:14]
+colnames(TCDS17.counts) <- rownames(Metadata[Metadata$cell_line == "TCDS17", ])
+TCDS17.razor <- TCDS17.raw %>%
+  select(
+    count = `Razor   unique peptides`
+  )
+```
+
+# **Quality Control**
+
+## Correlation Heatmaps
+
+```{r Correlation Heatmaps, message=FALSE}
+b143.QC.CorrHeatmap <- QC.MakeCorrHeatmap(
+  Counts.norm = b143.counts,
+  heatmap.rows = colnames(b143.counts),
+  main = "Correlation Heatmap of 143B Samples",
+  output.path = "./Results/Proteomic/Figures/b143_QC_CorrHeatmap.tiff"
+    )
+Saos2.QC.CorrHeatmap <- QC.MakeCorrHeatmap(
+  Counts.norm = Saos2.counts,
+  heatmap.rows = colnames(Saos2.counts),
+  main = "Correlation Heatmap of SaOS-2 Samples",
+  output.path = "./Results/Proteomic/Figures/Saos2_QC_CorrHeatmap.tiff"
+    )
+TCDS17.QC.CorrHeatmap <- QC.MakeCorrHeatmap(
+  Counts.norm = TCDS17.counts,
+  heatmap.rows = colnames(TCDS17.counts),
+  main = "Correlation Heatmap of T-CDS-17#4 Samples",
+  output.path = "./Results/Proteomic/Figures/TCDS17_QC_CorrHeatmap.tiff"
+    )
+```
+
+## Principal Component Analysis
+
+```{r PCAs, message=FALSE}
+b143.QC.PCA <- QC.MakePCA(
+  data = b143.counts,
+  metadata = Metadata[Metadata$cell_line == "b143", ],
+  main = "PCA of 143B Samples",
+  output.path = "./Results/Proteomic/Figures/b143_QC_PCA.tiff",
+  fill.color = c("#FF0000", "#0000FF")
+)
+ggplotly(b143.QC.PCA$Plot)
+Saos2.QC.PCA <- QC.MakePCA(
+  data = Saos2.counts,
+  metadata = Metadata[Metadata$cell_line == "Saos2", ],
+  main = "PCA of SaOS-2 Samples",
+  output.path = "./Results/Proteomic/Figures/Saos2_QC_PCA.tiff",
+  fill.color = c("#FF0000", "#0000FF")
+)
+ggplotly(Saos2.QC.PCA$Plot)
+TCDS17.QC.PCA <- QC.MakePCA(
+  data = TCDS17.counts,
+  metadata = Metadata[Metadata$cell_line == "TCDS17", ],
+  main = "PCA of T-CDS-17#4 Samples",
+  output.path = "./Results/Proteomic/Figures/TCDS17_QC_PCA.tiff",
+  fill.color = c("#FF0000", "#0000FF")
+)
+ggplotly(TCDS17.QC.PCA$Plot)
+```
+
+# **Differential Expression Analysis**
+
+```{r DEA: Tables}
+b143.DEPs <- DEA.DEqMS2Table(
+  data = b143.counts,
+  condition = Metadata[Metadata$cell_line == "b143", "condition"],
+  cont = c("DXR-Par"),
+  razor = b143.razor,
+  output.csv = "./Results/Proteomic/b143_DEPsTable.csv",
+  output.xlsx = "./Results/Proteomic/b143_DEPsTable.xlsx"
+)
+Saos2.DEPs <- DEA.DEqMS2Table(
+  data = Saos2.counts,
+  condition = Metadata[Metadata$cell_line == "Saos2", "condition"],
+  cont = c("DXR-Par"),
+  razor = Saos2.razor,
+  output.csv = "./Results/Proteomic/Saos2_DEPsTable.csv",
+  output.xlsx = "./Results/Proteomic/Saos2_DEPsTable.xlsx"
+)
+TCDS17.DEPs <- DEA.DEqMS2Table(
+  data = TCDS17.counts,
+  condition = Metadata[Metadata$cell_line == "TCDS17", "condition"],
+  cont = c("DXR-Par"),
+  razor = TCDS17.razor,
+  output.csv = "./Results/Proteomic/TCDS17_DEPsTable.csv",
+  output.xlsx = "./Results/Proteomic/TCDS17_DEPsTable.xlsx"
+)
+```
+
+## Volcano Plots
+
+```{r DEA: Volcano Plots, message=FALSE}
+b143.DEA.volcano <- DEA.MakeVolcano(
+  DEA.table = b143.DEPs,
+  sym.coln = "row", lfc.coln = "logFC", fdr.coln = "adj.P.Val", lfc.thr = .5,
+  main = "DEPs for 143B DX-R vs. Parental",
+  output.path = "./Results/Proteomic/Figures/b143_DEPs_volcano.tiff"
+)
+b143.DEA.volcano
+Saos2.DEA.volcano <- DEA.MakeVolcano(
+  DEA.table = Saos2.DEPs,
+  sym.coln = "row", lfc.coln = "logFC", fdr.coln = "adj.P.Val", lfc.thr = .5,
+  main = "DEPs for SaOS-2 DX-R vs. Parental",
+  output.path = "./Results/Proteomic/Figures/Saos2_DEPs_volcano.tiff"
+)
+Saos2.DEA.volcano
+TCDS17.DEA.volcano <- DEA.MakeVolcano(
+  DEA.table = TCDS17.DEPs,
+  sym.coln = "row", lfc.coln = "logFC", fdr.coln = "adj.P.Val", lfc.thr = .5,
+  main = "DEPs for T-CDS-17#4 DX-R vs. Parental",
+  output.path = "./Results/Proteomic/Figures/TCDS17_DEPs_volcano.tiff"
+)
+TCDS17.DEA.volcano
+```
+
+## Checking Coincidences by Venn Diagrams
+
+```{r DEA: Venn Diagrams, message=FALSE}
+Overall.DEA.VennDiagrams <- DEA.MakeVenn(
+  data.l = list(
+    "143B" = b143.DEPs,
+    "SaOS-2" = Saos2.DEPs,
+    "T-CDS-17#4" = TCDS17.DEPs
+    ),
+  lfc.coln = "logFC", fdr.coln = "adj.P.Val", Symbol = "row", lfc.thr = .5,
+  up.main = "Up-Regulated Coincidences",
+  up.file = "./Results/Proteomic/Figures/Overall_DEA_VennDiagram_up.tiff",
+  down.main = "Down-Regulated Coincidences",
+  down.file = "./Results/Proteomic/Figures/Overall_DEA_VennDiagram_down.tiff"
+  )
+Overall.DEA.VennDiagrams$Up.plot
+data.frame("Global Up Coincidences" = Overall.DEA.VennDiagrams$Up.data[[1]])
+Overall.DEA.VennDiagrams$Down.plot
+data.frame("Global Down Coincidences" = Overall.DEA.VennDiagrams$Down.data[[1]])
+```
+
+# **Functional Analysis**
+
+## Gene Set Enrichment Analysis (GSEA) with MSigDB Hallmark Collection
+
+```{r Functional Analysis: GSEA with Hallmark MSigDB, message=FALSE}
+Msigdb.geneset_h <- msigdbr(species = "human", category = "H") %>%
+  select(gs_name, entrez_gene)
+b143.GSEA.data <- PathEnrich.MakeGSEA(
+  GeneSet = Msigdb.geneset_h,
+  Res = b143.DEPs, lfc.coln = "logFC", SymInRow = T,
+  table.csv = "./Results/Proteomic/b143_GSEATable.csv",
+  table.xlsx = "./Results/Proteomic/b143_GSEATable.xlsx"
+)
+b143.GSEA.bubble <- PathEnrich.MakeBubble(
+  b143.GSEA.data$Results.table,
+  main = "Hallmark MSigDb Pathways Regulated in 143B DX-R",
+  output.path = "./Results/Proteomic/Figures/b143_GSEA_bubble.tiff"
+)
+Saos2.GSEA.data <- PathEnrich.MakeGSEA(
+  GeneSet = Msigdb.geneset_h,
+  Res = Saos2.DEPs, lfc.coln = "logFC", SymInRow = T,
+  table.csv = "./Results/Proteomic/Saos2_GSEATable.csv",
+  table.xlsx = "./Results/Proteomic/Saos2_GSEATable.xlsx"
+)
+Saos2.GSEA.bubble <- PathEnrich.MakeBubble(
+  Saos2.GSEA.data$Results.table,
+  main = "Hallmark MSigDb Pathways Regulated in SaOS-2 DX-R",
+  output.path = "./Results/Proteomic/Figures/Saos2_GSEA_bubble.tiff"
+)
+TCDS17.GSEA.data <- PathEnrich.MakeGSEA(
+  GeneSet = Msigdb.geneset_h,
+  Res = TCDS17.DEPs, lfc.coln = "logFC", SymInRow = T,
+  table.csv = "./Results/Proteomic/TCDS17_GSEATable.csv",
+  table.xlsx = "./Results/Proteomic/TCDS17_GSEATable.xlsx"
+)
+TCDS17.GSEA.bubble <- PathEnrich.MakeBubble(
+  TCDS17.GSEA.data$Results.table,
+  main = "Hallmark MSigDb Pathways Regulated in T-CDS-17#4 DX-R",
+  output.path = "./Results/Proteomic/Figures/TCDS17_GSEA_bubble.tiff"
+)
+```
+
+# **Save Results**
+
+```{r Save Results}
+save(
+  b143.DEPs, Saos2.DEPs, TCDS17.DEPs,
+  file = "./Results/Results_Proteomic.RData"
+)
+```

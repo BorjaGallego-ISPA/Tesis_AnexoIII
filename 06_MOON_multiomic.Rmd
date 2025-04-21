@@ -1,0 +1,1190 @@
+---
+title: 'Omic Characterization of Doxorubicin Resistant Bone Sarcoma Models: MultiOmic Integration Using COSMOS-MOON'
+author: "Borja Gallego Martínez"
+date: "`r Sys.Date()`"
+output: 
+  html_document: 
+    toc: true
+    toc_float: true
+    toc_collapsed: true
+    highlight: pygments
+    theme: paper
+    df_print: kable
+---
+
+```{r Setup, include=FALSE}
+ # Setup default parameters in the code chunks
+knitr::opts_chunk$set(
+  echo = F, 
+  message = F, 
+  warning = F, 
+  eval = T, 
+  cache.lazy = F
+  )
+```
+
+```{r Packages and Functions Setup, message=FALSE, warning=FALSE, include=FALSE}
+library(tidyverse)
+library(ggraph)
+library(tidygraph)
+library(reshape2)
+library(cosmosR)
+library(visNetwork)
+library(msigdbr)
+library(clusterProfiler)
+library(AnnotationDbi)
+library(org.Hs.eg.db)
+library(igraph)
+library(ggVennDiagram)
+library(VennDiagram)
+select <- dplyr::select
+mutate <- dplyr::mutate
+rename <- dplyr::rename
+filter <- dplyr::filter
+
+source("00_Functions.R")
+
+set.seed(123)
+```
+
+```{r Loading Results from previous analysis, message=FALSE, warning=FALSE, include=FALSE}
+load("./Results/Results_RNAseq_limma.RData")
+load("./Results/Results_Proteomic.RData")
+load("./Results/Results_Phospho.RData")
+
+data("meta_network")
+data("HMDB_mapper_vec")
+
+rm(list = c(ls(pattern = "MG63"), ls(pattern = ".DEPhos"),
+            ls(pattern = ".TFs$"), ls(pattern = ".Kin$")))
+```
+
+```{r Choose PKN, message=FALSE, warning=FALSE, include=FALSE}
+meta_network_for <- meta_network
+meta_network_for <- meta_network_cleanup(meta_network_for)
+
+meta_network_back <- tf_regulon %>%
+  select(source, interaction = sign, target)
+
+rm(meta_network)
+```
+
+# **Processing Input Data**
+
+## Expression Data
+
+```{r Processing Input Data: Expression, message=FALSE, warning=FALSE}
+print("143B DX-R:", quote = F)
+b143.expr <- RNAvsProt(
+  RNA = b143.DEGs, Prot = b143.DEPs, makePlot = F, exportData = F, merge = F) %>%
+  mutate(
+    t = case_when(
+      Agreement == "Yes" ~ t_r,
+      Agreement == "Unknown" & is.na(t_p) ~ t_r,
+      Agreement == "Unknown" & is.na(t_r) ~ t_p,
+      Agreement == "No" & FDR_r > .05 & FDR_p < .05 ~ t_p,
+      Agreement == "No" & FDR_r < .05 & FDR_p > .05 ~ t_r,
+      .default = 0
+    )
+  ) %>%
+  pull(t, name = Symbol)
+
+
+print("SaOS-2 DX-R:", quote = F)
+Saos2.expr <- RNAvsProt(
+  RNA = Saos2.DEGs, Prot = Saos2.DEPs, makePlot = F, exportData = F, merge = F) %>%
+  mutate(
+    t = case_when(
+      Agreement == "Yes" ~ t_r,
+      Agreement == "Unknown" & is.na(t_p) ~ t_r,
+      Agreement == "Unknown" & is.na(t_r) ~ t_p,
+      Agreement == "No" & FDR_r > .05 & FDR_p < .05 ~ t_p,
+      Agreement == "No" & FDR_r < .05 & FDR_p > .05 ~ t_r,
+      .default = 0
+    )
+  ) %>%
+  pull(t, name = Symbol)
+
+print("T-CDS-17#4 DX-R:", quote = F)
+TCDS17.expr <- RNAvsProt(
+  RNA = TCDS17.DEGs, Prot = TCDS17.DEPs, makePlot = F, exportData = F, merge = F) %>%
+  mutate(
+    t = case_when(
+      Agreement == "Yes" ~ t_r,
+      Agreement == "Unknown" & is.na(t_p) ~ t_r,
+      Agreement == "Unknown" & is.na(t_r) ~ t_p,
+      Agreement == "No" & FDR_r > .05 & FDR_p < .05 ~ t_p,
+      Agreement == "No" & FDR_r < .05 & FDR_p > .05 ~ t_r,
+      .default = 0
+    )
+  ) %>%
+  pull(t, name = Symbol)
+
+rm(list = c(ls(pattern = ".DEGs"), ls(pattern = ".DEPs")))
+```
+
+## TFs and Kinases
+
+```{r Processing Input Data: TFs and Kinases}
+b143.TFs_all <- b143.TFs_all$TFs.list
+b143.TFs_input <- b143.TFs_all %>%
+  pull(score, name = source)
+plot(density(b143.TFs_input), main = "Density of TFs Score in 143B DX-R")
+abline(v = 3.2)
+abline(v = -1.5)
+b143.TFs_to_remove <- b143.TFs_all %>%
+#  filter(p_value >= .05) %>%
+  filter(score > -1.5 & score < 3.2) %>%
+  pull(score, name = source)
+b143.TFs_filtered <- b143.TFs_all %>%
+#  filter(p_value < .05) %>%
+  filter(score < -1.5 | score > 3.2) %>%
+  pull(score, name = source)
+
+b143.Kin_all <- b143.Kin_all$Kinases.list 
+b143.Kin_input <- b143.Kin_all %>%
+  pull(score, name = source)
+
+plot(density(b143.Kin_input), main = "Density of Kinases Score in 143B DX-R")
+abline(v = 2)
+abline(v = -1.2)
+
+b143.Kin_filtered <- b143.Kin_all %>%
+#  filter(p_value < .05) %>%
+  filter(score < -2 | score > 2) %>%
+  pull(score, name = source)
+
+
+Saos2.TFs_all <- Saos2.TFs_all$TFs.list
+Saos2.TFs_input <- Saos2.TFs_all %>%
+  pull(score, name = source)
+plot(density(Saos2.TFs_input), main = "Density of TFs Score in SaOS-2 DX-R")
+abline(v = 1.2)
+abline(v = -1.2)
+Saos2.TFs_to_remove <- Saos2.TFs_all %>%
+#  filter(p_value >= .05) %>%
+  filter(score > -1.2 & score < 1.2) %>%
+  pull(score, name = source)
+Saos2.TFs_filtered <- Saos2.TFs_all %>%
+#  filter(p_value < .05) %>%
+  filter(score < -1.2 | score > 1.2) %>%
+  pull(score, name = source)
+
+Saos2.Kin_all <- Saos2.Kin_all$Kinases.list 
+Saos2.Kin_input <- Saos2.Kin_all %>%
+  pull(score, name = source)
+
+plot(density(Saos2.Kin_input), main = "Density of Kinases Score in SaOS-2 DX-R")
+abline(v = 1.8)
+abline(v = -2)
+
+Saos2.Kin_filtered <- Saos2.Kin_all %>%
+#  filter(p_value < .05) %>%
+  filter(score < -2 | score > 1.8) %>%
+  pull(score, name = source)
+
+
+TCDS17.TFs_all <- TCDS17.TFs_all$TFs.list
+TCDS17.TFs_input <- TCDS17.TFs_all %>%
+  pull(score, name = source)
+plot(density(TCDS17.TFs_input),
+     main = "Density of TFs Score in T-CDS-17#4 DX-R")
+abline(v = .8)
+abline(v = -1.5)
+TCDS17.TFs_to_remove <- TCDS17.TFs_all %>%
+#  filter(p_value >= .05) %>%
+  filter(score > -1.5 & score < .8) %>%
+  pull(score, name = source)
+TCDS17.TFs_filtered <- TCDS17.TFs_all %>%
+#  filter(p_value < .05) %>%
+  filter(score < -1.5 | score > .8) %>%
+  pull(score, name = source)
+
+TCDS17.Kin_all <- TCDS17.Kin_all$Kinases.list 
+TCDS17.Kin_input <- TCDS17.Kin_all %>%
+  pull(score, name = source)
+
+plot(density(TCDS17.Kin_input),
+     main = "Density of Kinases Score in T-CDS-17#4 DX-R")
+abline(v = .5)
+abline(v = -1.2)
+
+TCDS17.Kin_filtered <- TCDS17.Kin_all %>%
+#  filter(p_value < .05) %>%
+  filter(score < -1.2 | score > .5) %>%
+  pull(score, name = source)
+
+#rm(list = c(ls(pattern = "_all$")))
+```
+
+# **MOON Analysis**
+
+```{r MOON Analysis: Settings}
+TFN <- tf_regulon %>%
+  select(source, target, mor = sign)
+
+n_steps_for <- 6
+n_steps_back <- 1
+
+rm(tf_regulon)
+```
+
+```{r MOON Analysis: Running and Processing Results}
+print("--- Starting MOON Analysis of 143B ---", quote = F)
+
+print("Running Forward (Kinases to TFs) Analysis...", quote = F)
+
+b143.moon_for <- MOON.run(
+  meta_network = meta_network_for,
+  n_steps = n_steps_for,
+  TFN = TFN,
+  downstream_input = b143.TFs_input,
+  upstream_input = b143.Kin_filtered,
+  RNA_input = b143.expr,
+  downstream_remover = b143.TFs_to_remove
+)
+
+b143.moon_for$moon_res <- b143.moon_for$moon_res[, c(4, 2)]
+names(b143.moon_for$moon_res)[1] <- "source"
+
+plot(density(b143.moon_for$moon_res$score),
+     main = "Score Density of MOON Result in 143B (Forward)")
+abline(v = 1.5)
+abline(v = -1.5)
+
+b143.moon_for_sol <- reduce_solution_network(
+  decoupleRnival_res = b143.moon_for$moon_res,
+  meta_network = b143.moon_for$meta_network_filtered,
+  cutoff = 1.5,
+  upstream_input = b143.moon_for$upstream_inputs_filtered,
+  RNA_input = b143.expr,
+  n_steps = n_steps_for
+)
+
+names(b143.moon_for_sol$SIF)[3] <- "sign"
+
+b143.moon_for_sol <- translate_res(b143.moon_for_sol$SIF, b143.moon_for_sol$ATT,
+                                   HMDB_mapper_vec)
+
+print("Running Backward (TFs to Kinases) Analysis...", quote = F)
+
+b143.moon_back <- MOON.run(
+  meta_network = meta_network_back,
+  n_steps = n_steps_back,
+  TFN = TFN,
+  downstream_input = b143.Kin_input,
+  upstream_input = b143.TFs_filtered,
+  RNA_input = b143.expr,
+  compressed_mode = F
+)
+
+b143.moon_back$moon_res <- b143.moon_back$moon_res[, c(1, 2)]
+names(b143.moon_back$moon_res)[1] <- "source"
+
+plot(density(b143.moon_back$moon_res$score),
+     main = "Score Density of MOON Result in 143B (Backward)")
+abline(v = 1.5)
+abline(v = -1.5)
+
+b143.moon_back_sol <- reduce_solution_network(
+  decoupleRnival_res = b143.moon_back$moon_res,
+  meta_network = as.data.frame(b143.moon_back$meta_network_filtered[,c(1,3,2)]),
+  cutoff = 1.5,
+  upstream_input = b143.moon_back$upstream_inputs_filtered,
+  RNA_input = b143.expr,
+  n_steps = n_steps_back
+)
+
+names(b143.moon_back_sol$SIF)[3] <- "sign"
+
+b143.moon_back_sol <- translate_res(b143.moon_back_sol$SIF, b143.moon_back_sol$ATT,
+                               HMDB_mapper_vec)
+
+print("Merging Runs...", quote = F)
+
+b143.moon.res <- list()
+b143.moon.res$SIF <- as.data.frame(rbind(b143.moon_for_sol$SIF,
+                                         b143.moon_back_sol$SIF))
+b143.moon.res$SIF <- unique(b143.moon.res$SIF)
+b143.moon.res$ATT <- as.data.frame(rbind(b143.moon_for_sol$ATT,
+                                         b143.moon_back_sol$ATT))
+b143.moon.res$ATT <- b143.moon.res$ATT %>%
+  group_by(Nodes) %>%
+  summarise_each(funs(mean(., na.rm = T))) %>%
+  as.data.frame() %>%
+  mutate(
+    type = case_when(
+      Nodes %in% TFN$source ~ "TF",
+      Nodes %in% KSN$source ~ "Kinase",
+      .default = "Gene"
+    )
+  )
+
+print("--- Ending MOON Analysis of 143B ---", quote = F)
+
+print("--- Starting MOON Analysis of SaOS-2 ---", quote = F)
+
+print("Running Forward (Kinases to TFs) Analysis...", quote = F)
+
+Saos2.moon_for <- MOON.run(
+  meta_network = meta_network_for,
+  n_steps = n_steps_for,
+  TFN = TFN,
+  downstream_input = Saos2.TFs_input,
+  upstream_input = Saos2.Kin_filtered,
+  RNA_input = Saos2.expr,
+  downstream_remover = Saos2.TFs_to_remove
+)
+
+Saos2.moon_for$moon_res <- Saos2.moon_for$moon_res[, c(4, 2)]
+names(Saos2.moon_for$moon_res)[1] <- "source"
+
+plot(density(Saos2.moon_for$moon_res$score),
+     main = "Score Density of MOON Result in SaOS-2 (Forward)")
+abline(v = 1.5)
+abline(v = -1.5)
+
+Saos2.moon_for_sol <- reduce_solution_network(
+  decoupleRnival_res = Saos2.moon_for$moon_res,
+  meta_network = Saos2.moon_for$meta_network_filtered,
+  cutoff = 1.5,
+  upstream_input = Saos2.moon_for$upstream_inputs_filtered,
+  RNA_input = Saos2.expr,
+  n_steps = n_steps_for
+)
+
+names(Saos2.moon_for_sol$SIF)[3] <- "sign"
+
+Saos2.moon_for_sol <- translate_res(Saos2.moon_for_sol$SIF,
+                                    Saos2.moon_for_sol$ATT, HMDB_mapper_vec)
+
+print("Running Backward (TFs to Kinases) Analysis...", quote = F)
+
+Saos2.moon_back <- MOON.run(
+  meta_network = meta_network_back,
+  n_steps = n_steps_back,
+  TFN = TFN,
+  downstream_input = Saos2.Kin_input,
+  upstream_input = Saos2.TFs_filtered,
+  RNA_input = Saos2.expr,
+  compressed_mode = F
+)
+
+Saos2.moon_back$moon_res <- Saos2.moon_back$moon_res[, c(1, 2)]
+names(Saos2.moon_back$moon_res)[1] <- "source"
+
+plot(density(Saos2.moon_back$moon_res$score),
+     main = "Score Density of MOON Result in SaOS-2 (Backward)")
+abline(v = 1.5)
+abline(v = -1.5)
+
+Saos2.moon_back_sol <- reduce_solution_network(
+  decoupleRnival_res = Saos2.moon_back$moon_res,
+  meta_network = as.data.frame(Saos2.moon_back$meta_network_filtered[,c(1,3,2)]),
+  cutoff = 1.5,
+  upstream_input = Saos2.moon_back$upstream_inputs_filtered,
+  RNA_input = Saos2.expr,
+  n_steps = n_steps_back
+)
+names(Saos2.moon_back_sol$SIF)[3] <- "sign"
+
+Saos2.moon_back_sol <- translate_res(Saos2.moon_back_sol$SIF,
+                                     Saos2.moon_back_sol$ATT, HMDB_mapper_vec)
+
+print("Merging Runs...", quote = F)
+
+Saos2.moon.res <- list()
+Saos2.moon.res$SIF <- as.data.frame(rbind(Saos2.moon_for_sol$SIF,
+                                          Saos2.moon_back_sol$SIF))
+Saos2.moon.res$SIF <- unique(Saos2.moon.res$SIF)
+Saos2.moon.res$ATT <- as.data.frame(rbind(Saos2.moon_for_sol$ATT,
+                                          Saos2.moon_back_sol$ATT))
+Saos2.moon.res$ATT <- Saos2.moon.res$ATT %>%
+  group_by(Nodes) %>%
+  summarise_each(funs(mean(., na.rm = T))) %>%
+  as.data.frame() %>%
+  mutate(
+    type = case_when(
+      Nodes %in% TFN$source ~ "TF",
+      Nodes %in% KSN$source ~ "Kinase",
+      .default = "Gene"
+    )
+  )
+
+Saos2.moon_filt <- c(
+  "Metab",
+  "Enzyme",
+  "trdox_c", "trdrd_c"
+)
+Saos2.moon.res$ATT <- Saos2.moon.res$ATT %>%
+  filter(
+    !grepl(
+      paste(Saos2.moon_filt, collapse = "|"),
+      Nodes
+    )
+  )
+Saos2.moon.res$SIF <- Saos2.moon.res$SIF %>%
+  filter(
+    !grepl(
+      paste(Saos2.moon_filt, collapse = "|"),
+      source
+    )
+  ) %>%
+  filter(
+    !grepl(
+      paste(Saos2.moon_filt, collapse = "|"),
+      target
+    )
+  )
+
+print("--- Ending MOON Analysis of SaOS-2 ---", quote = F)
+
+print("--- Starting MOON Analysis of T-CDS17#4 ---", quote = F)
+
+print("Running Forward (Kinases to TFs) Analysis...", quote = F)
+
+TCDS17.moon_for <- MOON.run(
+  meta_network = meta_network_for,
+  n_steps = n_steps_for,
+  TFN = TFN,
+  downstream_input = TCDS17.TFs_input,
+  upstream_input = TCDS17.Kin_filtered,
+  RNA_input = TCDS17.expr,
+  downstream_remover = TCDS17.TFs_to_remove
+)
+
+TCDS17.moon_for$moon_res <- TCDS17.moon_for$moon_res[, c(4, 2)]
+names(TCDS17.moon_for$moon_res)[1] <- "source"
+
+plot(density(TCDS17.moon_for$moon_res$score),
+     main = "Score Density of MOON Result in T-CDS-17#4 (Forward)")
+abline(v = 1.5)
+abline(v = -1.5)
+
+TCDS17.moon_for_sol <- reduce_solution_network(
+  decoupleRnival_res = TCDS17.moon_for$moon_res,
+  meta_network = TCDS17.moon_for$meta_network_filtered,
+  cutoff = 1.5,
+  upstream_input = TCDS17.moon_for$upstream_inputs_filtered,
+  RNA_input = TCDS17.expr,
+  n_steps = n_steps_for
+)
+
+names(TCDS17.moon_for_sol$SIF)[3] <- "sign"
+
+TCDS17.moon_for_sol <- translate_res(TCDS17.moon_for_sol$SIF,
+                                     TCDS17.moon_for_sol$ATT, HMDB_mapper_vec)
+
+print("Running Backward (TFs to Kinases) Analysis...", quote = F)
+
+TCDS17.moon_back <- MOON.run(
+  meta_network = meta_network_back,
+  n_steps = n_steps_back,
+  TFN = TFN,
+  downstream_input = TCDS17.Kin_input,
+  upstream_input = TCDS17.TFs_filtered,
+  RNA_input = TCDS17.expr,
+  compressed_mode = F
+)
+
+TCDS17.moon_back$moon_res <- TCDS17.moon_back$moon_res[, c(1, 2)]
+names(TCDS17.moon_back$moon_res)[1] <- "source"
+
+plot(density(TCDS17.moon_back$moon_res$score),
+     main = "Score Density of MOON Result in T-CDS-17#4 (Backward)")
+abline(v = 1.5)
+abline(v = -1.5)
+
+TCDS17.moon_back_sol <- reduce_solution_network(
+  decoupleRnival_res = TCDS17.moon_back$moon_res,
+  meta_network = as.data.frame(
+    TCDS17.moon_back$meta_network_filtered[,c(1,3,2)]),
+  cutoff = 1.5,
+  upstream_input = TCDS17.moon_back$upstream_inputs_filtered,
+  RNA_input = TCDS17.expr,
+  n_steps = n_steps_back
+)
+
+names(TCDS17.moon_back_sol$SIF)[3] <- "sign"
+
+TCDS17.moon_back_sol <- translate_res(TCDS17.moon_back_sol$SIF,
+                                      TCDS17.moon_back_sol$ATT, HMDB_mapper_vec)
+
+print("Merging Runs...", quote = F)
+
+TCDS17.moon.res <- list()
+TCDS17.moon.res$SIF <- as.data.frame(rbind(TCDS17.moon_for_sol$SIF,
+                                           TCDS17.moon_back_sol$SIF))
+TCDS17.moon.res$SIF <- unique(TCDS17.moon.res$SIF)
+TCDS17.moon.res$ATT <- as.data.frame(rbind(TCDS17.moon_for_sol$ATT,
+                                           TCDS17.moon_back_sol$ATT))
+TCDS17.moon.res$ATT <- TCDS17.moon.res$ATT %>%
+  group_by(Nodes) %>%
+  summarise_each(funs(mean(., na.rm = T))) %>%
+  as.data.frame() %>%
+  mutate(
+    type = case_when(
+      Nodes %in% TFN$source ~ "TF",
+      Nodes %in% KSN$source ~ "Kinase",
+      .default = "Gene"
+    )
+  )
+
+print("--- Ending MOON Analysis of T-CDS17#4 ---", quote = F)
+```
+
+# **Downstream Analysis**
+
+## Network Visualization
+
+```{r Downstream: Network Visualization}
+b143.moon.net <- list()
+b143.moon.net$Nodes <- b143.moon.res$ATT %>%
+  rename(id = Nodes) %>%
+  mutate(
+    label = id,
+    color = ifelse(score > 0, "red", "blue"),
+    shape = case_when(type == "TF" ~ "triangle",
+                      type == "Kinase" ~ "square",
+                      T ~ "dot")
+  )
+b143.moon.net$Edges <- b143.moon.res$SIF %>%
+  select(from = source, sign, to = target) %>%
+  mutate(smooth = T,
+         dashes = ifelse(sign > 0, F, T))
+
+lnodes <- data.frame(
+  label = c("TF", "Kinase", "Gene", "score > 0", "score < 0"),
+  shape = c("triangle", "square", "dot", "diamond", "diamond"),
+  title = "Legend",
+  color = c(rep("black", times = 3), "red", "blue")
+)
+ledges <- data.frame(
+  dashes = c(FALSE, TRUE),
+  label = c("activate", "inhibit"),
+  arrows = "to",
+  font.align = "top",
+  color = "black"
+)
+
+b143.moon.net$Vis <- visNetwork(
+  b143.moon.net$Nodes, b143.moon.net$Edges,
+  main = "MOON Solution Network", submain = "143B DX-R", width = "100%"
+  ) %>%
+  visIgraphLayout(layout = "layout_with_fr", randomSeed = 1, #type = "full",
+                  niter = 100000) %>%
+  visEdges(arrows = "to", color = "dimgrey", width = 2) %>%
+  visNodes(font = "30px arial black bold") %>%
+  visLegend(addNodes = lnodes, addEdges = ledges,
+            useGroups = F, zoom = F, ncol = 2) %>%
+  visOptions(highlightNearest = T, nodesIdSelection = T)
+b143.moon.net$Vis
+
+Saos2.moon.net <- list()
+Saos2.moon.net$Nodes <- Saos2.moon.res$ATT %>%
+  rename(id = Nodes) %>%
+  mutate(
+    label = id,
+    color = ifelse(score > 0, "red", "blue"),
+    shape = case_when(type == "TF" ~ "triangle",
+                      type == "Kinase" ~ "square",
+                      T ~ "dot")
+  )
+Saos2.moon.net$Edges <- Saos2.moon.res$SIF %>%
+  select(from = source, sign, to = target) %>%
+  mutate(smooth = T,
+         dashes = ifelse(sign > 0, F, T))
+Saos2.moon.net$Vis <- visNetwork(
+  Saos2.moon.net$Nodes, Saos2.moon.net$Edges,
+  main = "MOON Solution Network", submain = "SaOS-2 DX-R", width = "100%"
+  ) %>%
+  visIgraphLayout(layout = "layout_with_fr", randomSeed = 1, #type = "full",
+                  niter = 100000) %>%
+  visEdges(arrows = "to", color = "dimgrey", width = 2) %>%
+  visNodes(font = "30px arial black bold") %>%
+  visLegend(addNodes = lnodes, addEdges = ledges,
+            useGroups = F, zoom = F, ncol = 2) %>%
+  visOptions(highlightNearest = T, nodesIdSelection = T)
+Saos2.moon.net$Vis
+
+TCDS17.moon.net <- list()
+TCDS17.moon.net$Nodes <- TCDS17.moon.res$ATT %>%
+  rename(id = Nodes) %>%
+  mutate(
+    label = id,
+    color = ifelse(score > 0, "red", "blue"),
+    shape = case_when(type == "TF" ~ "triangle",
+                      type == "Kinase" ~ "square",
+                      T ~ "dot")
+  )
+TCDS17.moon.net$Edges <- TCDS17.moon.res$SIF %>%
+  select(from = source, sign, to = target) %>%
+  mutate(smooth = T,
+         dashes = ifelse(sign > 0, F, T))
+TCDS17.moon.net$Vis <- visNetwork(
+  TCDS17.moon.net$Nodes, TCDS17.moon.net$Edges,
+  main = "MOON Solution Network", submain = "T-CDS-17#4 DX-R", width = "100%"
+  ) %>%
+  visIgraphLayout(layout = "layout_with_fr", randomSeed = 1, type = "full",
+                  niter = 100000) %>%
+  visEdges(arrows = "to", color = "dimgrey", width = 2) %>%
+  visNodes(font = "30px arial black bold") %>%
+  visLegend(addNodes = lnodes, addEdges = ledges,
+            useGroups = F, zoom = F, ncol = 2) %>%
+  visOptions(highlightNearest = T, nodesIdSelection = T)
+TCDS17.moon.net$Vis
+```
+
+## Coincidences
+
+```{r Downstream: checking coincidences}
+Nodes.list_up <- list(
+  "143B" = b143.moon.res$ATT %>% filter(score > 0) %>% pull(Nodes),
+  "SaOS-2" = Saos2.moon.res$ATT %>% filter(score > 0) %>% pull(Nodes),
+  "T-CDS-17#4" = TCDS17.moon.res$ATT %>% filter(score > 0) %>% pull(Nodes)
+)
+Nodes.list_down <- list(
+  "143B" = b143.moon.res$ATT %>% filter(score < 0) %>% pull(Nodes),
+  "SaOS-2" = Saos2.moon.res$ATT %>% filter(score < 0) %>% pull(Nodes),
+  "T-CDS-17#4" = TCDS17.moon.res$ATT %>% filter(score < 0) %>% pull(Nodes)
+)
+vd.data_names <- c(
+  "All",
+  "143B and SaOS-2",
+  "143B and T-CDS-17#4",
+  "SaOS-2 and T-CDS-17#4",
+  "143B",
+  "SaOS-2",
+  "T-CDS-17#4"
+)
+
+Moon.vd_up <- list(
+  plot = ggVennDiagram(Nodes.list_up, label_alpha = 0, label = "count",
+                       set_size = 10, label_size = 10) +
+    scale_fill_gradient(low = "gray80",high = "darkred") +
+    ggtitle("Moon Solutions", subtitle = "Coincidences in Activated Nodes") +
+    scale_x_continuous(expand = expansion(mult = .3)) +
+    theme_void() +
+    theme(
+      legend.position = "none",
+      plot.title = element_text(hjust = .5, face = "bold", size = 18),
+      plot.subtitle = element_text(hjust = .5, face = "bold", size = 16,
+                                   colour = "grey40")
+          ),
+  data = calculate.overlap(Nodes.list_up)
+)
+
+ggsave("./Results/MOON_final/Figures/Venn_up.tiff", Moon.vd_up$plot,
+       device = "tiff", dpi = 300, bg = "white")
+
+names(Moon.vd_up$data) <- vd.data_names
+
+Moon.vd_up$plot
+
+for (i in 1:4) {
+  if (length(Moon.vd_up$data[[i]]) == 0) {
+    Moon.vd_up$data[[i]] <- "None"
+  }
+  print(
+  paste0(
+    "Active Moon Result Coincidences Between ", names(Moon.vd_up$data)[[i]],
+    " DX-R models: ", paste(Moon.vd_up$data[[i]], collapse = ", ")
+    ),
+  quote = F
+  )
+}
+
+Moon.vd_down <- list(
+  plot = ggVennDiagram(Nodes.list_down, label_alpha = 0, label = "count") +
+    scale_fill_gradient(low = "gray80",high = "darkred") +
+    ggtitle("Moon Results Coincidences - Inactivated") +
+    scale_x_continuous(expand = expansion(mult = .3)) +
+    theme(),
+  data = calculate.overlap(Nodes.list_down)
+)
+names(Moon.vd_down$data) <- vd.data_names
+
+Moon.vd_down$plot
+
+for (i in 1:4) {
+  if (length(Moon.vd_down$data[[i]]) == 0) {
+    Moon.vd_down$data[[i]] <- "None"
+  }
+  print(
+  paste0(
+    "Inactive Moon Result Coincidences Between ", names(Moon.vd_down$data)[[i]],
+    " DX-R models: ", paste(Moon.vd_down$data[[i]], collapse = ", ")
+    ),
+  quote = F
+  )
+}
+```
+
+## Pathway Analysis: ORA
+
+```{r Downstream: ORA, message=FALSE, warning=FALSE}
+Msigdb.geneset_h <- msigdbr(species = "human", category = "H") %>%
+  select(gs_name, entrez_gene)
+
+b143.moon.ora <- Enrich.MakeORA(
+  data = data.frame(Symbol = b143.moon.net$Nodes$id),
+  db = "UNI",
+  t2g = Msigdb.geneset_h,
+  main = "ORA of MOON Result Network in 143B DX-R",
+  output.tiff = "./Results/MOON_final/Figures/b143_moon_ora.tiff"
+)
+plotly::ggplotly(b143.moon.ora$Plot)
+
+Saos2.moon.ora <- Enrich.MakeORA(
+  data = data.frame(Symbol = Saos2.moon.net$Nodes$id),
+  db = "UNI",
+  t2g = Msigdb.geneset_h,
+  main = "ORA of MOON Result Network in SaOS-2 DX-R",
+  output.tiff = "./Results/MOON_final/Figures/Saos2_moon_ora.tiff"
+)
+plotly::ggplotly(Saos2.moon.ora$Plot)
+
+TCDS17.moon.ora <- Enrich.MakeORA(
+  data = data.frame(Symbol = TCDS17.moon.net$Nodes$id),
+  db = "UNI",
+  t2g = Msigdb.geneset_h,
+  main = "ORA of MOON Result Network in T-CDS-17#4 DX-R",
+  output.tiff = "./Results/MOON_final/Figures/TCDS17_moon_ora.tiff"
+)
+plotly::ggplotly(TCDS17.moon.ora$Plot)
+
+ORA.moon.all <- rbind(
+  mutate(b143.moon.ora$Table, cell = "143B"),
+  mutate(Saos2.moon.ora$Table, cell = "SaOS-2"),
+  mutate(TCDS17.moon.ora$Table, cell = "T-CDS-17#4")
+) %>%
+  ggplot(aes(cell, fct_reorder(ID, p.adjust, .desc = T))) +
+  geom_point(aes(size = Count, color = p.adjust)) +
+  scale_size(range = c(5, 14), name = "Count") +
+  ggtitle("ORA of COSMOS Results") +
+  theme_bw() +
+  theme(
+    axis.title.y = element_blank(),
+    axis.title.x = element_blank(),
+    axis.text.x = element_text(size = 20, face = "bold"),
+    axis.text.y = element_text(size = 20, face = "bold"),
+    plot.title = element_text(hjust = .5, face = "bold", size = 22),
+    legend.title = element_text(size = 20, face = "bold"),
+    legend.text = element_text(size = 18)
+    ) +
+  scale_x_discrete(expand = waiver()) +
+  scale_color_gradient2(trans = "log10")
+
+ggsave("./Results/MOON_final/Figures/all_moon_ora.tiff", plot = ORA.moon.all,
+       device = "tiff", dpi = 300,
+       units = "px", width = 3883, height = 2399
+       )
+```
+
+## Clusterization
+
+```{r Downstream: Clusterization, message=FALSE, warning=FALSE}
+b143.moon.cluster <- COSMOS.MakeClusters(b143.moon.net, Msigdb.geneset_h)
+b143.moon.cluster$Network <- visNetwork(
+  b143.moon.cluster$Nodes, b143.moon.cluster$Edges,
+  main = "Clusterization and Enrichment of MOON Result Network",
+  submain = "143B DX-R",
+  width = "100%"
+  ) %>%
+  visNetwork::visIgraphLayout(layout = "layout_with_fr", randomSeed = 1,
+                              type = "full", niter = 100000) %>%
+  visNodes(size = 30) %>%
+#  visEdges(width = .1) %>%
+  visLegend(zoom = T) %>%
+  visOptions(
+    highlightNearest = list(enabled = T, degree = 2, hover = F),
+    nodesIdSelection = T
+    )
+#b143.moon.cluster$Network
+
+Saos2.moon.cluster <- COSMOS.MakeClusters(Saos2.moon.net, Msigdb.geneset_h)
+Saos2.moon.cluster$Network <- visNetwork(
+  Saos2.moon.cluster$Nodes, Saos2.moon.cluster$Edges,
+  main = "Clusterization and Enrichment of MOON Result Network",
+  submain = "SaOS-2 DX-R",
+  width = "100%"
+  ) %>%
+  visNetwork::visIgraphLayout(layout = "layout_with_fr", randomSeed = 1,
+                              type = "full", niter = 100000) %>%
+  visNodes(size = 30) %>%
+#  visEdges(width = .1) %>%
+  visLegend(zoom = T) %>%
+  visOptions(
+    highlightNearest = T,
+    nodesIdSelection = T
+    )
+#Saos2.moon.cluster$Network
+
+TCDS17.moon.cluster <- COSMOS.MakeClusters(TCDS17.moon.net, Msigdb.geneset_h)
+TCDS17.moon.cluster$Network <- visNetwork(
+  TCDS17.moon.cluster$Nodes, TCDS17.moon.cluster$Edges,
+  main = "Clusterization and Enrichment of MOON Result Network",
+  submain = "T-CDS-17#4 DX-R",
+  width = "100%"
+  ) %>%
+  visNetwork::visIgraphLayout(layout = "layout_with_fr", randomSeed = 1,
+                              type = "full", niter = 100000) %>%
+   visNodes(size = 30) %>%
+#  visEdges(width = .1) %>%
+  visLegend(zoom = T) %>%
+  visOptions(
+    highlightNearest = T,
+    nodesIdSelection = T
+    )
+#TCDS17.moon.cluster$Network
+
+
+pal <- c(
+  "#EE7733", "#0077BB", "#33BBEE", "#EE3377", "#CC3311", "#009988", "#b68c47",
+  "#934ac0", "#71b448", "#af5179", "#558965", "#bb4b37", "#6d7ab3"
+  )
+
+b143.moon.cluster_graph <- ggraph(b143.moon.cluster$Edges,
+                                  layout = "fr") +
+  geom_edge_link(
+    colour = "grey50",
+    end_cap = circle(3, "mm"),
+    start_cap = circle(3, "mm")
+  ) +
+  geom_node_point(aes(colour = b143.moon.cluster$Nodes$group), size = 6) +
+  scale_colour_manual(values = pal) +
+  theme_graph() +
+  ggtitle(
+    "143-B COSMOS Solution",
+    subtitle = "Clusterization and Most Representative Pathway of each Cluster"
+    ) +
+  theme(
+    legend.position = "bottom",
+    legend.title = element_blank(),
+    legend.text = element_text(face = "bold", size = 14),
+    plot.title = element_text(hjust = .5, face = "bold", size = 20),
+    plot.subtitle = element_text(hjust = .5, face = "bold", size = 16,
+                                   colour = "grey40")
+  )
+
+ggsave("./Results/MOON_final/Figures/b143_moon_cluster.tiff",
+       plot = b143.moon.cluster_graph, device = "tiff", dpi = 300,
+       units = "px", width = 3362, height = 2090
+       )
+
+b143.moon.cluster_graph
+
+Saos2.moon.cluster_graph <- ggraph(Saos2.moon.cluster$Edges,
+                                  layout = "fr") +
+  geom_edge_link(
+    colour = "grey50",
+    end_cap = circle(3, "mm"),
+    start_cap = circle(3, "mm")
+  ) +
+  geom_node_point(aes(colour = Saos2.moon.cluster$Nodes$group), size = 6) +
+  scale_colour_manual(values = pal) +
+  theme_graph() +
+  ggtitle(
+    "SaOS-2 COSMOS Solution",
+    subtitle = "Clusterization and Most Representative Pathway of each Cluster"
+    ) +
+  theme(
+    legend.position = "bottom",
+    legend.title = element_blank(),
+    legend.text = element_text(face = "bold", size = 14),
+    plot.title = element_text(hjust = .5, face = "bold", size = 20),
+    plot.subtitle = element_text(hjust = .5, face = "bold", size = 16,
+                                   colour = "grey40")
+  )
+
+ggsave("./Results/MOON_final/Figures/saos2_moon_cluster.tiff",
+       plot = Saos2.moon.cluster_graph, device = "tiff", dpi = 300,
+       units = "px", width = 3362, height = 2090
+       )
+
+Saos2.moon.cluster_graph
+
+TCDS17.moon.cluster_graph <- ggraph(TCDS17.moon.cluster$Edges,
+                                    layout = "fr") +
+  geom_edge_link(
+    colour = "grey50",
+    end_cap = circle(3, "mm"),
+    start_cap = circle(3, "mm")
+  ) +
+  geom_node_point(aes(colour = TCDS17.moon.cluster$Nodes$group), size = 6) +
+  scale_colour_manual(values = pal) +
+  theme_graph() +
+  ggtitle(
+    "T-CDS-17#4 COSMOS Solution",
+    subtitle = "Clusterization and Most Representative Pathway of each Cluster"
+    ) +
+  theme(
+    legend.position = "bottom",
+    legend.title = element_blank(),
+    legend.text = element_text(face = "bold", size = 14),
+    plot.title = element_text(hjust = .5, face = "bold", size = 20),
+    plot.subtitle = element_text(hjust = .5, face = "bold", size = 16,
+                                   colour = "grey40")
+  )
+
+ggsave("./Results/MOON_final/Figures/TCDS17_moon_cluster.tiff",
+       plot = TCDS17.moon.cluster_graph, device = "tiff", dpi = 300,
+       units = "px", width = 3362, height = 2090
+       )
+
+TCDS17.moon.cluster_graph
+```
+
+## Subnetworks
+
+```{r Downstream: Subnetwork, message=FALSE, warning=FALSE}
+MOON.makeSubnet <- function(moon.res, central_node, n_steps, main,
+                            output.tiff = "", export = T, show_border = F){
+  moon.res$SIF <- moon.res$SIF %>% select(from = source, to = target, sign)
+  
+  subnet_edges <- moon.res$SIF %>% filter(from == central_node)
+  
+  if (n_steps > 1) {
+    for (steps in 2:n_steps) {
+      subnet_edges <- moon.res$SIF %>%
+        filter(from == central_node | from %in% subnet_edges$to)
+    }
+  }
+  
+  subnet_edges <- subnet_edges %>%
+    mutate(
+      interaction = ifelse(sign == 1, "Activating", "Inhibiting")
+    ) %>%
+    select(from, to, interaction)
+
+  subnet_nodes <- moon.res$ATT %>%
+    filter(Nodes %in% subnet_edges$from | Nodes %in% subnet_edges$to)
+  
+  subnet <- tbl_graph(nodes = subnet_nodes, edges = subnet_edges)
+  
+  if (show_border == T) {
+    p <- ggraph(subnet, layout = "igraph", algorithm = "fr", niter = 100000) +
+      geom_edge_fan(
+        aes(linetype = interaction),
+        edge_alpha = .8,
+        color = "grey50",
+        arrow = arrow(length = unit(2, "mm"), type = "open"),
+        end_cap = circle(7, "mm")
+        ) +
+      geom_node_point(aes(fill = score, shape = type, colour = RNA_input),
+                      size = 12, stroke = 1.5) +
+      scale_shape_manual(values = c("Gene" = 21, "Kinase" = 24, "TF" = 22)) +
+      scale_colour_gradient2(low = "dodgerblue4", high = "firebrick4", 
+                             mid = "whitesmoke", midpoint = 0) +
+      scale_fill_gradient2(low = "dodgerblue4", high = "firebrick4", 
+                           mid = "whitesmoke", midpoint = 0) +
+      scale_linetype_manual(values = c("Activating" = "solid",
+                                       "Inhibiting" = "dotted")) +
+      geom_node_text(aes(label = Nodes), size = 2.5, vjust = .5, hjust = .5,
+                     color = "black", fontface = "bold") +
+      ggtitle(
+        main,
+        subtitle = paste0(central_node, " Centered Subnetwork with ", n_steps,
+                          " Downstream Steps")
+        ) +
+      theme_graph() +
+      theme(
+        legend.position = "bottom",
+        plot.title = element_text(hjust = .5, face = "bold", size = 20),
+        plot.subtitle = element_text(hjust = .5, face = "bold", size = 16,
+                                     colour = "grey40"),
+        legend.text = element_text(size = 12),
+        legend.title = element_text(size = 14, face = "bold")
+      )
+  } else {
+    p <- ggraph(subnet, layout = "igraph", algorithm = "fr", niter = 100000) +
+      geom_edge_fan(
+        aes(linetype = interaction),
+        edge_alpha = .8,
+        color = "grey50",
+        arrow = arrow(length = unit(2, "mm"), type = "open"),
+        end_cap = circle(7, "mm")
+        ) +
+      geom_node_point(aes(colour = score, shape = type), size = 12) +
+      scale_colour_gradient2(low = "dodgerblue4", high = "firebrick4", 
+                             mid = "whitesmoke", midpoint = 0) +
+      scale_linetype_manual(values = c("Activating" = "solid",
+                                       "Inhibiting" = "dotted")) +
+      geom_node_text(aes(label = Nodes), size = 2.5, vjust = .5, hjust = .5,
+                     color = "black", fontface = "bold") +
+      ggtitle(
+        main,
+        subtitle = paste0(central_node, " Centered Subnetwork with ", n_steps,
+                          " Downstream Steps")
+        ) +
+      theme_graph() +
+      theme(
+        legend.position = "bottom",
+        plot.title = element_text(hjust = .5, face = "bold", size = 20),
+        plot.subtitle = element_text(hjust = .5, face = "bold", size = 16,
+                                     colour = "grey40"),
+        legend.text = element_text(size = 12),
+        legend.title = element_text(size = 14, face = "bold")
+      )
+  }
+  
+  if (export == T) {
+    ggsave(output.tiff, p, device = "tiff", dpi = 300,
+           units = "px", width = 3362, height = 2090
+           )
+  }
+  
+  return(p)
+}
+
+b143.moon.EP300 <- MOON.makeSubnet(
+  b143.moon.res,
+  central_node = "EP300", n_steps = 2, main = "143-B COSMOS Solution",
+  output.tiff = "./Results/MOON_final/Figures/b143_moon_ep300.tiff"
+)
+b143.moon.EP300_border <- MOON.makeSubnet(
+  b143.moon.res,
+  central_node = "EP300", n_steps = 2, main = "143-B COSMOS Solution",
+  output.tiff = "./Results/MOON_final/Figures/b143_moon_ep300_border.tiff",
+  show_border = T
+)
+
+b143.moon.STAT1 <- MOON.makeSubnet(
+  b143.moon.res,
+  central_node = "STAT1", n_steps = 2, main = "143-B COSMOS Solution",
+  output.tiff = "./Results/MOON_final/Figures/b143_moon_stat1.tiff"
+)
+b143.moon.STAT1_border <- MOON.makeSubnet(
+  b143.moon.res,
+  central_node = "STAT1", n_steps = 2, main = "143-B COSMOS Solution",
+  output.tiff = "./Results/MOON_final/Figures/b143_moon_stat1_border.tiff",
+  show_border = T
+)
+
+Saos2.moon.STAT1 <- MOON.makeSubnet(
+  Saos2.moon.res,
+  central_node = "STAT1", n_steps = 4, main = "SaOS-2 COSMOS Solution",
+  output.tiff = "./Results/MOON_final/Figures/saos2_moon_stat1.tiff"
+)
+Saos2.moon.STAT1_border <- MOON.makeSubnet(
+  Saos2.moon.res,
+  central_node = "STAT1", n_steps = 4, main = "SaOS-2 COSMOS Solution",
+  output.tiff = "./Results/MOON_final/Figures/saos2_moon_stat1_border.tiff",
+  show_border = T
+)
+
+b143.moon.NFKB1 <- MOON.makeSubnet(
+  b143.moon.res,
+  central_node = "NFKB1", n_steps = 3, main = "143-B COSMOS Solution",
+  output.tiff = "./Results/MOON_final/Figures/b143_moon_nfkb1.tiff"
+)
+b143.moon.NFKB1_border <- MOON.makeSubnet(
+  b143.moon.res,
+  central_node = "NFKB1", n_steps = 3, main = "143-B COSMOS Solution",
+  output.tiff = "./Results/MOON_final/Figures/b143_moon_nfkb1_border.tiff",
+  show_border = T
+)
+
+Saos2.moon.NFKB1 <- MOON.makeSubnet(
+  Saos2.moon.res,
+  central_node = "NFKB1", n_steps = 3, main = "SaOS-2 COSMOS Solution",
+  output.tiff = "./Results/MOON_final/Figures/saos2_moon_nfkb1.tiff"
+)
+Saos2.moon.NFKB1_border <- MOON.makeSubnet(
+  Saos2.moon.res,
+  central_node = "NFKB1", n_steps = 3, main = "SaOS-2 COSMOS Solution",
+  output.tiff = "./Results/MOON_final/Figures/saos2_moon_nfkb1_border.tiff",
+  show_border = T
+)
+
+TCDS17.moon.CDK1 <- MOON.makeSubnet(
+  TCDS17.moon.res,
+  central_node = "CDK1", n_steps = 4, main = "T-CDS-17#4 COSMOS Solution",
+  output.tiff = "./Results/MOON_final/Figures/TCDS17_moon_cdk1.tiff"
+)
+TCDS17.moon.CDK1_border <- MOON.makeSubnet(
+  TCDS17.moon.res,
+  central_node = "CDK1", n_steps = 4, main = "T-CDS-17#4 COSMOS Solution",
+  output.tiff = "./Results/MOON_final/Figures/TCDS17_moon_cdk1_border.tiff",
+  show_border = T
+)
+
+Saos2.moon.E2F1 <- MOON.makeSubnet(
+  Saos2.moon.res,
+  central_node = "E2F1", n_steps = 2, main = "SaOS-2 COSMOS Solution",
+  output.tiff = "./Results/MOON_final/Figures/saos2_moon_e2f1.tiff"
+)
+Saos2.moon.E2F1_border <- MOON.makeSubnet(
+  Saos2.moon.res,
+  central_node = "E2F1", n_steps = 2, main = "SaOS-2 COSMOS Solution",
+  output.tiff = "./Results/MOON_final/Figures/saos2_moon_e2f1_border.tiff",
+  show_border = T
+)
+
+
+b143.moon.mtor_nodelist <- b143.moon.cluster$Nodes %>%
+  filter(group == "PI3K AKT MTOR SIGNALING") %>%
+  pull(id)
+b143.moon.mtor <- tbl_graph(
+  nodes = b143.moon.res$ATT %>% filter(Nodes %in% b143.moon.mtor_nodelist),
+  edges = b143.moon.res$SIF %>% select(from = source, to = target, sign) %>%
+    filter(from %in% b143.moon.mtor_nodelist &
+             to %in% b143.moon.mtor_nodelist) %>%
+    mutate(
+      interaction = ifelse(sign == 1, "Activating", "Inhibiting")
+      ) %>%
+    select(from, to, interaction)
+  ) %>%
+  ggraph(layout = "igraph", algorithm = "fr", niter = 100000) +
+  geom_edge_fan(
+        aes(linetype = interaction),
+        edge_alpha = .8,
+        color = "grey50",
+        arrow = arrow(length = unit(2, "mm"), type = "open"),
+        end_cap = circle(7, "mm")
+        ) +
+      geom_node_point(aes(colour = score, shape = type), size = 12) +
+      scale_colour_gradient2(low = "dodgerblue4", high = "firebrick4", 
+                             mid = "whitesmoke", midpoint = 0) +
+      scale_linetype_manual(values = c("Activating" = "solid",
+                                       "Inhibiting" = "dotted")) +
+      geom_node_text(aes(label = Nodes), size = 2.5, vjust = .5, hjust = .5,
+                     color = "black", fontface = "bold") +
+      ggtitle(
+        "143-B COSMOS Solution",
+        subtitle = "PI3K-AKT-MTOR Signaling Subnetowrk"
+        ) +
+      theme_graph() +
+      theme(
+        legend.position = "bottom",
+        plot.title = element_text(hjust = .5, face = "bold", size = 20),
+        plot.subtitle = element_text(hjust = .5, face = "bold", size = 16,
+                                     colour = "grey40"),
+        legend.text = element_text(size = 12),
+        legend.title = element_text(size = 14, face = "bold")
+      )
+ggsave("./Results/MOON_final/Figures/b143_moon_mtor.tiff",
+       b143.moon.mtor, device = "tiff", dpi = 300,
+       units = "px", width = 3500, height = 3200
+       )
+```
+
+
+# **Save Results**
+
+```{r Save Results}
+write_csv(b143.moon.res$SIF, "./Results/MOON_final/b143_moon_sif.csv")
+write_csv(b143.moon.res$ATT, "./Results/MOON_final/b143_moon_att.csv")
+write_csv(Saos2.moon.res$SIF, "./Results/MOON_final/Saos2_moon_sif.csv")
+write_csv(Saos2.moon.res$ATT, "./Results/MOON_final/Saos2_moon_att.csv")
+write_csv(TCDS17.moon.res$SIF, "./Results/MOON_final/TCDS17_moon_sif.csv")
+write_csv(TCDS17.moon.res$ATT, "./Results/MOON_final/TCDS17_moon_att.csv")
+
+save(
+  b143.moon.res, b143.moon.ora, b143.moon.cluster, b143.moon.net,
+  Saos2.moon.res, Saos2.moon.ora, Saos2.moon.cluster, Saos2.moon.net,
+  TCDS17.moon.res, TCDS17.moon.ora, TCDS17.moon.cluster, TCDS17.moon.net,
+  Moon.vd_up, Moon.vd_down,
+  file = "./Results/Results_MOON_final.RData"
+)
+```
